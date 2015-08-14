@@ -6,42 +6,45 @@ import (
 )
 
 type Sorter struct {
-	w            *io.PipeWriter
-	r            *io.PipeReader
-	Deserializer Deserializer
+	w                *io.PipeWriter
+	r                *io.PipeReader
+	DeserializerFunc DeserializerFunc
 }
 
 // Emitters is a slice of Emitter interfaces that implements the sort.Interface
-type Emitters []Emitter
+type Reducers []Reducer
 
-func (e Emitters) Len() int           { return len(e) }
-func (e Emitters) Swap(i, j int)      { e[i], e[j] = e[j], e[i] }
-func (e Emitters) Less(i, j int) bool { return e[i].Key() < e[j].Key() }
+func (e Reducers) Len() int           { return len(e) }
+func (e Reducers) Swap(i, j int)      { e[i], e[j] = e[j], e[i] }
+func (e Reducers) Less(i, j int) bool { return e[i].Key() < e[j].Key() }
 
-func NewSorter(d Deserializer) *Sorter {
+func NewSorter(d DeserializerFunc) *Sorter {
 	pr, pw := io.Pipe()
 	return &Sorter{
-		w:            pw,
-		r:            pr,
-		Deserializer: d,
+		w:                pw,
+		r:                pr,
+		DeserializerFunc: d,
 	}
 }
 
 func (m *Sorter) Sort(w io.Writer) {
 	// Return a channel from the formatter
-	ch := deserializeInput(m.Deserializer)(m)
-	s := make(Emitters, 0)
+	ch := deserializeInput(m.DeserializerFunc, m)
+	s := make(Reducers, 0)
 	// Iterate over the channel and call fn
 	for r := range ch {
-		// Continue if Filter method returns false
-		if !r.Filter() {
+		// Continue if Where method returns false
+		if !r.Where() {
 			continue
 		}
-		s = append(s, r)
+		reducer, ok := r.(Reducer)
+		if ok {
+			s = append(s, reducer)
+		}
 	}
 	sort.Sort(s)
 	for _, o := range s {
-		emit(w, o.(Emitter).Key(), o.Value())
+		o.Emit(w)
 	}
 }
 

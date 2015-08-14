@@ -1,49 +1,47 @@
 package pipeline
 
-import (
-	"bufio"
-	"bytes"
-	"encoding/json"
-	"fmt"
-	"io"
-	"os"
-)
+import "io"
 
-// Deserializer should take an empty interface and return an Emitter.
-// It is used within the Map and Reduce functions to deserialize incoming
-// data into an type that implements the Emitter interface.
-type Deserializer func([]byte) Emitter
+// DeserializerFunc is a function that accepts an io.Reader and returns a
+// Deserializer interface.
+type DeserializerFunc func(io.Reader) Deserializer
 
-func deserializeInput(d Deserializer) func(io.Reader) chan Emitter {
-	return func(r io.Reader) chan Emitter {
-		// Create a channel of Emitter to send incoming deserialized []bytes
-		ch := make(chan Emitter)
-		go func(d Deserializer, s *bufio.Scanner) {
-			for s.Scan() {
-				ch <- d(s.Bytes())
-			}
-			if err := s.Err(); err != nil {
-				fmt.Fprintln(os.Stderr, "reading input:", err)
-			}
-			close(ch)
-		}(d, bufio.NewScanner(r))
-		return ch
-	}
+// Deserializer is an interface for deserializing the input data into Emitter
+// interfaces which can then be used within other pipeline methods.
+type Deserializer interface {
+	// HasNext should return true if there is data available
+	HasNext() bool
+	// Next should return the next available Emitter interface
+	Next() Emitter
+	// Error should return the last error to occur
+	Error() error
 }
 
-// JSONDeserializer returns a Deserializer that parses a byte slice and
-// unmarshals it to the Emitter type provided by calling fn.
-func JSONDeserializer(fn func() Emitter) Deserializer {
-	return func(b []byte) Emitter {
-		// Find a tab delimiter (the hadoop default key field delimiter)
-		delim := bytes.Index(b, DefaultKeyFieldDelimiter)
-		// Create a new row, could look at implementing sync.Pool for this
-		s := fn()
-		// If the delimiter is present separate into key and value portions
-		if delim != -1 {
-			b = b[delim+1:]
+// deserializeInput reads data from r and deserializes it using the Deserializer provided by
+// calling d. It returns a channel of Emitter interfaces.
+func deserializeInput(d DeserializerFunc, r io.Reader) chan Emitter {
+
+	// Call the DeserializerFunc to return a new Deserializer
+	deserializer := d(r)
+
+	// Create a channel of Emitter interfaces
+	ch := make(chan Emitter)
+
+	go func() {
+		// Whilst the deserializers HasNext method returns true
+		for deserializer.HasNext() {
+			// Get the next Emitter and send to the channel
+			ch <- deserializer.Next()
 		}
-		json.Unmarshal(b, &s)
-		return s
-	}
+		// Close the channel on completion
+		close(ch)
+		// If an error has occurred that is not due to reaching EOF then panic
+		// TODO: Find a good way to handle this other than panicking.
+		if deserializer.Error() != nil && deserializer.Error() != io.EOF {
+			panic(deserializer.Error())
+		}
+	}()
+	// Return the channel
+	return ch
+
 }
